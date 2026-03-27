@@ -36,6 +36,9 @@ from bs4 import BeautifulSoup
 import lxml
 from selenium.webdriver.chrome.service import Service as ChromeService
 from webdriver_manager.chrome import ChromeDriverManager
+from PIL import Image
+import piexif
+from datetime import datetime
 
 
 def is_wsl():
@@ -129,6 +132,82 @@ def get_chrome_paths():
         driver_path = None
     
     return browser_path, driver_path
+
+
+def write_exif_to_image(image_path, photo_data):
+    """
+    将 QQ 空间照片的 EXIF 信息写入图片文件
+    
+    Args:
+        image_path: 图片文件路径
+        photo_data: QQ 空间返回的照片数据字典
+    """
+    try:
+        if photo_data.get('is_video', False):
+            return
+
+        exif_data = photo_data.get('exif', {})
+        if not exif_data:
+            return
+
+        zeroth_ifd = {}
+        exif_ifd = {}
+
+        make = exif_data.get('make', '')
+        if make:
+            zeroth_ifd[piexif.ImageIFD.Make] = make
+
+        model = exif_data.get('model', '')
+        if model:
+            zeroth_ifd[piexif.ImageIFD.Model] = model
+
+        original_time = exif_data.get('originalTime', '')
+        if original_time:
+            exif_ifd[piexif.ExifIFD.DateTimeOriginal] = original_time
+            exif_ifd[piexif.ExifIFD.DateTimeDigitized] = original_time
+
+        exposure_time = exif_data.get('exposureTime', '')
+        if exposure_time:
+            try:
+                if '/' in exposure_time:
+                    num, den = exposure_time.split('/')
+                    exif_ifd[piexif.ExifIFD.ExposureTime] = (int(num), int(den))
+            except:
+                pass
+
+        iso = exif_data.get('iso', '')
+        if iso:
+            try:
+                exif_ifd[piexif.ExifIFD.ISOSpeedRatings] = int(iso)
+            except:
+                pass
+
+        focal_length = exif_data.get('focalLength', '')
+        if focal_length:
+            try:
+                if '/' in focal_length:
+                    num, den = focal_length.split('/')
+                    exif_ifd[piexif.ExifIFD.FocalLength] = (int(num), int(den))
+            except:
+                pass
+
+        flash = exif_data.get('flash', '')
+        if flash:
+            try:
+                exif_ifd[piexif.ExifIFD.Flash] = int(flash)
+            except:
+                pass
+
+        if zeroth_ifd or exif_ifd:
+            exif_dict = {"0th": zeroth_ifd, "Exif": exif_ifd}
+            try:
+                exif_bytes = piexif.dump(exif_dict)
+                piexif.insert(exif_bytes, image_path)
+            except Exception as e:
+                queue_print(f">> EXIF 写入失败: {e}")
+
+    except Exception as e:
+        queue_print(f">> 处理 EXIF 出错: {e}")
 
 
 global_queue = Queue()
@@ -497,10 +576,10 @@ class QQZonePictures:
                 exist_index += 1
             temp_pic_names.append(pic_name)
 
-            contents.append((pic_name, url))
+            contents.append((pic_name, url, photo))
 
         with open('./url.txt', 'w+') as f:
-            for pic_name, url in contents:
+            for pic_name, url, photo in contents:
                 f.write(pic_name + " " + url + '\n')
         queue_print(">> 图片信息写入url.txt完成")
 
@@ -519,7 +598,7 @@ class QQZonePictures:
                 if not item:
                     queue_print('>> [{}]没有更多内容，当前线程完成'.format(id))
                     break
-                pic_name, url = item
+                pic_name, url, photo = item
                 path = os.path.join(root, pic_name)
                 queue_print('>> [{}]当前下载：{} - {}'.format(id, path, url))
                 cnt_retry = 0
@@ -530,6 +609,7 @@ class QQZonePictures:
                         with open(path, 'wb+') as file:
                             file.write(read.content)
                         queue_print(f">> [{id}] {pic_name} 下载成功")
+                        write_exif_to_image(path, photo)
                         break
                     except:
                         cnt_retry += 1
